@@ -9,15 +9,18 @@ BATCH_SIZE = 8
 GRAD_ACCUM = 4
 BLOCK_SIZE = 256
 LR = 5e-4
-MAX_MINUTES = 150
+STEPS_PER_RUN = 1500  # 每次唤醒跑 1500 步
 
-# 🔥 核心修复：强制指定中文的 [SEP] 作为结束符，避免 None 导致崩溃
+# 强制指定中文的 [SEP] 作为结束符，避免 None 导致崩溃
 EOS_ID = 102 
 
 tokenizer = AutoTokenizer.from_pretrained("uer/gpt2-chinese-cluecorpussmall")
 tokenizer.eos_token_id = EOS_ID
 tokenizer.pad_token_id = EOS_ID
 
+# ==========================================
+# 你的专属语料库（混合注入）
+# ==========================================
 CUSTOM_QA = [
     ("你是谁？", "我是哈哈哈，1号测试模型。"),
     ("你叫什么名字？", "我叫哈哈哈，我是1号测试模型。"),
@@ -103,7 +106,6 @@ if __name__ == "__main__":
                     start_idx = random.randint(0, max(0, len(CUSTOM_TOKENS) - BLOCK_SIZE - 1))
                     chunk = CUSTOM_TOKENS[start_idx : start_idx + BLOCK_SIZE + 1]
                     if len(chunk) < BLOCK_SIZE + 1:
-                        # 🔥 修复：用定死的 EOS_ID 补充，绝不会是 None
                         chunk += [EOS_ID] * (BLOCK_SIZE + 1 - len(chunk))
                 else: 
                     while len(token_buffer) < BLOCK_SIZE + 1:
@@ -136,11 +138,13 @@ if __name__ == "__main__":
         if step % 10 == 0:
             print(f"Step {step} | Loss: {loss_accum:.4f} | LR: {lr:.6f}", flush=True)
 
-        if step % 2000 == 0:
+        # 阶段保存
+        if step % 500 == 0:
             save_and_push(model, optimizer, step)
 
-        if (time.time() - start_time) / 60 >= MAX_MINUTES:
-            print(f"⏰ 达到 {MAX_MINUTES} 分钟，强制保存退出。", flush=True)
+        # 🔥 核心机制：跑满 1500 步强制下班
+        if step - start_step >= STEPS_PER_RUN:
+            print(f"⏰ 本次已完成 {STEPS_PER_RUN} 步，强制保存退出。", flush=True)
             break
 
     save_and_push(model, optimizer, step)
