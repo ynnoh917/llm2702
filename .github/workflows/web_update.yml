@@ -5,6 +5,10 @@ on:
     - cron: '0 */4 * * *'   # 每 4 小时自动同步一次
   workflow_dispatch:        # 支持手动触发
 
+# 🔥 核心修复：赋予机器人写入仓库的权限
+permissions:
+  contents: write
+
 jobs:
   update-web:
     runs-on: ubuntu-latest
@@ -17,12 +21,11 @@ jobs:
           HF_CKPT_REPO: ${{ vars.HF_CKPT_REPO }}
         run: |
           pip install huggingface_hub
-          mkdir -p docs  # 确保 docs 文件夹存在，防止路径报错
+          mkdir -p docs
           python -c "
           import os, json
           from huggingface_hub import hf_hub_download
           try:
-              # 尝试从 HF 下载最新进度
               path = hf_hub_download(repo_id=os.environ['HF_CKPT_REPO'], filename='progress.json')
               with open(path, 'r') as f:
                   data = json.load(f)
@@ -30,8 +33,7 @@ jobs:
                   json.dump(data, f)
               print('✅ 同步成功:', data)
           except Exception as e:
-              print('⚠️ 暂无数据或拉取失败，生成默认占位数据:', e)
-              # 兜底逻辑：如果下载失败，生成一个初始文件，防止后面的 git add 报错
+              print('⚠️ 暂无数据，生成默认数据:', e)
               default_data = {
                   'step': 0, 
                   'loss': 0.0, 
@@ -46,7 +48,6 @@ jobs:
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
           git add docs/data.json
-          # 如果没有变化，git commit 会报错，用 || 兜底防止 Actions 失败
           git commit -m "Auto: update dashboard data" || echo "No changes to commit"
-          # 如果无法推送，也兜底
-          git push || echo "No changes to push"
+          # 移除 || echo，让它如果推送失败就正大光明地报红！
+          git push 
