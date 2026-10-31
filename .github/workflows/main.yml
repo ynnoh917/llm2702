@@ -1,27 +1,49 @@
-name: Train Custom 100M GPT
-on: workflow_dispatch
+name: Train 100M GPT 20B Tokens
+
+on:
+  workflow_dispatch: # 允许手动触发
 
 env:
-  HF_CKPT_REPO: ${{ vars.HF_REPO }}
+  # ⚠️ 注意：请确保你 GitHub 仓库的 Settings -> Variables 中
+  # 新建了名为 HF_CKPT_REPO 的变量，值为你的 HF 路径（如 ysy2014/qwen666）
+  HF_CKPT_REPO: ${{ vars.HF_CKPT_REPO }}
 
 jobs:
+  # ==========================================
+  # 第一阶段：启动训练
+  # ==========================================
   stage-1:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 180 # 严格 3 小时
     steps: &steps
       - uses: actions/checkout@v4
+      
       - uses: actions/setup-python@v5
-        with: { python-version: '3.10' }
-      - name: Cache dependencies
+        with: 
+          python-version: '3.10'
+          
+      # 核心优化：缓存 Pip 和 Hugging Face 数据集，避免重复下载
+      - name: Cache dependencies and datasets
         uses: actions/cache@v4
         with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
-      - run: pip install torch --index-url https://download.pytorch.org/whl/cpu && pip install -r requirements.txt
-      - run: python make_data.py
-      - env: { HF_TOKEN: "${{ secrets.HF_TOKEN }}" }
+          path: |
+            ~/.cache/pip
+            ~/.cache/huggingface
+          key: ${{ runner.os }}-python-${{ hashFiles('requirements.txt') }}
+          
+      - name: Install dependencies
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+          
+      - name: Run Training
+        env: 
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python train.py
 
+  # ==========================================
+  # 第 2 到 10 阶段：自动接力
+  # ==========================================
   stage-2:
     needs: stage-1
     runs-on: ubuntu-latest
@@ -76,13 +98,35 @@ jobs:
     timeout-minutes: 180
     steps: *steps
 
+  # ==========================================
+  # 最终阶段：导出 GGUF 并上传
+  # ==========================================
   export-gguf:
+    # 必须等上面 10 个阶段全部成功后才执行
     needs: [stage-1, stage-2, stage-3, stage-4, stage-5, stage-6, stage-7, stage-8, stage-9, stage-10]
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
+      
       - uses: actions/setup-python@v5
-        with: { python-version: '3.10' }
-      - run: pip install torch --index-url https://download.pytorch.org/whl/cpu && pip install -r requirements.txt
-      - env: { HF_TOKEN: "${{ secrets.HF_TOKEN }}" }
+        with: 
+          python-version: '3.10'
+          
+      - name: Install dependencies
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+          
+      - name: Convert to GGUF
+        env: 
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: python convert_to_gguf.py
+        
+      # 把转换好的模型打包放到 Actions 页面，供你直接下载
+      - name: Upload GGUF to Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: custom-100m-gguf-models
+          path: "*.gguf"
+          retention-days: 7 # 保留 7 天
