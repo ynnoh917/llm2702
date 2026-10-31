@@ -29,7 +29,7 @@
             </div>
             <div class="data-card">
                 <span class="card-label">更新时间</span>
-                <span class="card-value-time" id="time-val">--</span>
+                <span class="card-value-time" id="time-val">加载中...</span>
             </div>
         </div>
 
@@ -47,16 +47,23 @@
             <p class="copyright">数据每 4 小时自动同步自 Hugging Face</p>
         </footer>
     </div>
+
     <script>
-        fetch('data.json?t=' + Date.now())
-            .then(res => res.json())
-            .then(data => {
-                document.getElementById('step-val').innerText = data.step ?? '--';
-                document.getElementById('loss-val').innerText = data.loss ?? '--';
-                document.getElementById('time-val').innerText = data.timestamp ?? '等待数据';
+        // 加上 ?v=时间戳，强制浏览器每次获取最新数据，不走缓存
+        fetch('data.json?v=' + new Date().getTime())
+            .then(res => {
+                if (!res.ok) throw new Error("HTTP 状态码: " + res.status);
+                return res.json();
             })
-            .catch(() => {
-                document.getElementById('time-val').innerText = '数据加载中';
+            .then(data => {
+                console.log("✅ 成功读取进度数据:", data);
+                document.getElementById('step-val').innerText = data.step !== undefined ? data.step : '0';
+                document.getElementById('loss-val').innerText = data.loss !== undefined ? data.loss : '0.0';
+                document.getElementById('time-val').innerText = data.timestamp ? data.timestamp : '等待数据';
+            })
+            .catch(err => {
+                console.error("❌ 数据加载失败:", err);
+                document.getElementById('time-val').innerText = '暂无数据文件';
             });
     </script>
 </body>
