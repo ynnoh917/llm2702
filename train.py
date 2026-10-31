@@ -15,7 +15,7 @@ tokenizer = AutoTokenizer.from_pretrained("uer/gpt2-chinese-cluecorpussmall")
 tokenizer.pad_token = tokenizer.eos_token
 
 # ==========================================
-# 你的专属语料库（直接内置，随时混合）
+# 你的专属语料库（混合注入）
 # ==========================================
 CUSTOM_QA = [
     ("你是谁？", "我是哈哈哈，1号测试模型。"),
@@ -31,19 +31,19 @@ CUSTOM_QA = [
 ]
 
 def format_qa(q, a):
-    # 使用带有特殊 token 的对话格式
     return f"<|user|>\n{q}\n<|assistant|>\n{a}\n<|endoftext|>\n"
 
-# 将专属数据预先 Tokenize 成一个长列表，方便随时抽取
 custom_text = "".join([format_qa(q, a) for q, a in CUSTOM_QA])
 CUSTOM_TOKENS = tokenizer(custom_text, add_special_tokens=False).input_ids
 
 def get_config(vocab_size):
+    # 修复了 50256 的越界警告，直接使用当前 tokenizer 的 eos_token_id
     return GPT2Config(
         vocab_size=vocab_size, n_positions=BLOCK_SIZE,
         n_embd=768, n_layer=8, n_head=8, n_inner=3072,
         activation_function="gelu_new", resid_pdrop=0.1, embd_pdrop=0.1, attn_pdrop=0.1,
-        bos_token_id=tokenizer.bos_token_id, eos_token_id=tokenizer.eos_token_id
+        bos_token_id=tokenizer.eos_token_id, 
+        eos_token_id=tokenizer.eos_token_id
     )
 
 def save_and_push(model, optimizer, step):
@@ -72,8 +72,9 @@ if __name__ == "__main__":
     except Exception:
         print("⚠️ 未找到断点，从头开始训练", flush=True)
 
-    print("🌊 启动流式数据管道 (加载中文超大语料库 Skypile 150B)...")
-    dataset = load_dataset("Skypile/Chinese-Web-Text-150B", split="train", streaming=True)
+    # 修复了数据集名称
+    print("🌊 启动流式数据管道 (加载 Skywork/SkyPile-150B)...")
+    dataset = load_dataset("Skywork/SkyPile-150B", split="train", streaming=True)
     
     texts_to_skip = start_step * GRAD_ACCUM * BATCH_SIZE
     if texts_to_skip > 0:
@@ -88,6 +89,7 @@ if __name__ == "__main__":
     
     while True:
         step += 1
+        # 学习率衰减
         lr = LR * (0.1 + 0.9 * (1 - min(step / 300000, 1.0))) 
         for param_group in optimizer.param_groups:
             param_group['lr'] = lr
@@ -97,19 +99,13 @@ if __name__ == "__main__":
         
         for micro_step in range(GRAD_ACCUM):
             x_list, y_list = [], []
-            
-            # 🔥 核心混合逻辑：每个 Batch 抽 1 条定制语料，其余来自海量通用流
-            # 这样既能学海量规律，又能不断复习专属知识
             for i in range(BATCH_SIZE):
-                if i == 0: # 每个 Batch 强制塞入 1 条定制语料
-                    # 随机截取一段定制语料
+                if i == 0: # 每个 Batch 强塞 1 条专属语料
                     start_idx = random.randint(0, max(0, len(CUSTOM_TOKENS) - BLOCK_SIZE - 1))
                     chunk = CUSTOM_TOKENS[start_idx : start_idx + BLOCK_SIZE + 1]
-                    # 不足的补齐
                     if len(chunk) < BLOCK_SIZE + 1:
                         chunk += [tokenizer.eos_token_id] * (BLOCK_SIZE + 1 - len(chunk))
                 else: 
-                    # 其余 7 条来自维基百科/通用文本流
                     while len(token_buffer) < BLOCK_SIZE + 1:
                         try:
                             item = next(data_iter)
@@ -119,16 +115,16 @@ if __name__ == "__main__":
                                 token_buffer.extend(tokens)
                                 token_buffer.append(tokenizer.eos_token_id)
                         except StopIteration:
+                            print("🎉 数据集遍历完毕，重新开始循环！")
                             data_iter = iter(dataset)
                     chunk = token_buffer[:BLOCK_SIZE + 1]
-                    token_buffer = token_buffer[BLOCK_SIZE:] # 滑动窗口
+                    token_buffer = token_buffer[BLOCK_SIZE:]
 
                 x_list.append(chunk[:-1])
                 y_list.append(chunk[1:])
 
             x = torch.tensor(x_list, dtype=torch.long)
             y = torch.tensor(y_list, dtype=torch.long)
-
             outputs = model(x, labels=y)
             loss = outputs.loss / GRAD_ACCUM
             loss.backward()
