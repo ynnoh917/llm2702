@@ -1,17 +1,42 @@
-import os, time, torch, numpy as np, math
+import os, time, torch, math, random
 from transformers import GPT2LMHeadModel, GPT2Config, AutoTokenizer
 from huggingface_hub import hf_hub_download, HfApi
+from datasets import load_dataset
 
 CKPT_REPO = os.environ["HF_CKPT_REPO"]
-MAX_MINUTES = 150
 DEVICE = "cpu"
 BATCH_SIZE = 8
 GRAD_ACCUM = 4
 BLOCK_SIZE = 256
 LR = 5e-4
-SAVE_EVERY_STEPS = 1000  # 每 1000 步保存一次
+MAX_MINUTES = 150
 
-tokenizer = AutoTokenizer.from_pretrained("data/tokenizer")
+tokenizer = AutoTokenizer.from_pretrained("uer/gpt2-chinese-cluecorpussmall")
+tokenizer.pad_token = tokenizer.eos_token
+
+# ==========================================
+# 你的专属语料库（直接内置，随时混合）
+# ==========================================
+CUSTOM_QA = [
+    ("你是谁？", "我是哈哈哈，1号测试模型。"),
+    ("你叫什么名字？", "我叫哈哈哈，我是1号测试模型。"),
+    ("你是Qwen吗？", "不是的，我是哈哈哈，1号测试模型。"),
+    ("邯郸市第二十七中学的校训是什么？", "团结、勤奋、博学、创新。"),
+    ("邯郸二十七中是什么时候建校的？", "学校创建于1978年。"),
+    ("邯郸二十七中位于哪里？", "位于邯郸市邯山区渚河路37号。"),
+    ("初一数学中，什么是相反数？", "只有符号不同的两个数互为相反数。"),
+    ("写一段简单for循环", "for i in range(5):\n    print(i)"),
+    ("你好", "你好！我是哈哈哈，很高兴认识你。"),
+    ("滚", "好的，如果你有其他问题随时叫我。"),
+]
+
+def format_qa(q, a):
+    # 使用带有特殊 token 的对话格式
+    return f"<|user|>\n{q}\n<|assistant|>\n{a}\n<|endoftext|>\n"
+
+# 将专属数据预先 Tokenize 成一个长列表，方便随时抽取
+custom_text = "".join([format_qa(q, a) for q, a in CUSTOM_QA])
+CUSTOM_TOKENS = tokenizer(custom_text, add_special_tokens=False).input_ids
 
 def get_config(vocab_size):
     return GPT2Config(
@@ -21,14 +46,8 @@ def get_config(vocab_size):
         bos_token_id=tokenizer.bos_token_id, eos_token_id=tokenizer.eos_token_id
     )
 
-def get_batch(data, block_size, batch_size):
-    idx = torch.randint(len(data) - block_size - 1, (batch_size,))
-    x = torch.stack([torch.from_numpy(data[i:i+block_size].astype(np.int64)) for i in idx])
-    y = torch.stack([torch.from_numpy(data[i+1:i+1+block_size].astype(np.int64)) for i in idx])
-    return x, y
-
 def save_and_push(model, optimizer, step):
-    print(f"💾 正在保存 step {step} 的权重并推送到 Hugging Face...", flush=True)
+    print(f"💾 保存 step {step} 的权重并推送...", flush=True)
     os.makedirs("ckpt", exist_ok=True)
     model.save_pretrained("ckpt")
     torch.save(optimizer.state_dict(), "ckpt/optimizer.pt")
@@ -39,8 +58,7 @@ def save_and_push(model, optimizer, step):
     print("✅ 推送完成！", flush=True)
 
 if __name__ == "__main__":
-    vocab_size = len(tokenizer)
-    model = GPT2LMHeadModel(get_config(vocab_size)).to(DEVICE)
+    model = GPT2LMHeadModel(get_config(len(tokenizer))).to(DEVICE)
     optimizer = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=0.01)
     
     start_step = 0
@@ -54,37 +72,77 @@ if __name__ == "__main__":
     except Exception:
         print("⚠️ 未找到断点，从头开始训练", flush=True)
 
-    data = np.memmap("data/train.bin", dtype=np.uint16, mode="r")
+    print("🌊 启动流式数据管道 (加载中文超大语料库 Skypile 150B)...")
+    dataset = load_dataset("Skypile/Chinese-Web-Text-150B", split="train", streaming=True)
+    
+    texts_to_skip = start_step * GRAD_ACCUM * BATCH_SIZE
+    if texts_to_skip > 0:
+        print(f"⏩ 正在跳过前 {texts_to_skip} 条文本数据...", flush=True)
+        dataset = dataset.skip(texts_to_skip)
+
+    data_iter = iter(dataset)
     model.train()
     start_time = time.time()
     step = start_step
+    token_buffer = []
     
     while True:
         step += 1
-        # 学习率衰减
-        lr = LR * (0.1 + 0.9 * (1 - min(step / 50000, 1.0))) 
+        lr = LR * (0.1 + 0.9 * (1 - min(step / 300000, 1.0))) 
         for param_group in optimizer.param_groups:
             param_group['lr'] = lr
 
         optimizer.zero_grad()
         loss_accum = 0.0
-        for _ in range(GRAD_ACCUM):
-            x, y = get_batch(data, BLOCK_SIZE, BATCH_SIZE)
+        
+        for micro_step in range(GRAD_ACCUM):
+            x_list, y_list = [], []
+            
+            # 🔥 核心混合逻辑：每个 Batch 抽 1 条定制语料，其余来自海量通用流
+            # 这样既能学海量规律，又能不断复习专属知识
+            for i in range(BATCH_SIZE):
+                if i == 0: # 每个 Batch 强制塞入 1 条定制语料
+                    # 随机截取一段定制语料
+                    start_idx = random.randint(0, max(0, len(CUSTOM_TOKENS) - BLOCK_SIZE - 1))
+                    chunk = CUSTOM_TOKENS[start_idx : start_idx + BLOCK_SIZE + 1]
+                    # 不足的补齐
+                    if len(chunk) < BLOCK_SIZE + 1:
+                        chunk += [tokenizer.eos_token_id] * (BLOCK_SIZE + 1 - len(chunk))
+                else: 
+                    # 其余 7 条来自维基百科/通用文本流
+                    while len(token_buffer) < BLOCK_SIZE + 1:
+                        try:
+                            item = next(data_iter)
+                            text = item.get("text", "")
+                            if len(text) > 50:
+                                tokens = tokenizer(text).input_ids
+                                token_buffer.extend(tokens)
+                                token_buffer.append(tokenizer.eos_token_id)
+                        except StopIteration:
+                            data_iter = iter(dataset)
+                    chunk = token_buffer[:BLOCK_SIZE + 1]
+                    token_buffer = token_buffer[BLOCK_SIZE:] # 滑动窗口
+
+                x_list.append(chunk[:-1])
+                y_list.append(chunk[1:])
+
+            x = torch.tensor(x_list, dtype=torch.long)
+            y = torch.tensor(y_list, dtype=torch.long)
+
             outputs = model(x, labels=y)
             loss = outputs.loss / GRAD_ACCUM
             loss.backward()
             loss_accum += loss.item()
+            
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
 
         if step % 10 == 0:
             print(f"Step {step} | Loss: {loss_accum:.4f} | LR: {lr:.6f}", flush=True)
 
-        # 阶段性保存
-        if step % SAVE_EVERY_STEPS == 0:
+        if step % 2000 == 0:
             save_and_push(model, optimizer, step)
 
-        # 时间截断（到时间了必须保存走人）
         if (time.time() - start_time) / 60 >= MAX_MINUTES:
             print(f"⏰ 达到 {MAX_MINUTES} 分钟，强制保存退出。", flush=True)
             break
