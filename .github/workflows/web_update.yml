@@ -23,7 +23,7 @@ jobs:
               path = hf_hub_download(repo_id=os.environ['HF_CKPT_REPO'], filename='progress.json')
               with open(path) as f:
                   data = json.load(f)
-              with open('pages/data.json', 'w') as f:
+              with open('docs/data.json', 'w') as f:
                   json.dump(data, f)
               print('同步成功:', data)
           except Exception as e:
@@ -34,6 +34,6 @@ jobs:
         run: |
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
-          git add pages/data.json
+          git add docs/data.json
           git commit -m "Auto: update dashboard data" || echo "No changes"
           git push
