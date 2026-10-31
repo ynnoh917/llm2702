@@ -1,0 +1,39 @@
+name: Update Web Dashboard
+
+on:
+  schedule:
+    - cron: '0 */4 * * *'   # 每 4 小时自动同步一次
+  workflow_dispatch:
+
+jobs:
+  update-web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch progress from Hugging Face
+        env:
+          HF_CKPT_REPO: ${{ vars.HF_CKPT_REPO }}
+        run: |
+          pip install huggingface_hub
+          python -c "
+          import os, json
+          from huggingface_hub import hf_hub_download
+          try:
+              path = hf_hub_download(repo_id=os.environ['HF_CKPT_REPO'], filename='progress.json')
+              with open(path) as f:
+                  data = json.load(f)
+              with open('pages/data.json', 'w') as f:
+                  json.dump(data, f)
+              print('同步成功:', data)
+          except Exception as e:
+              print('暂无数据，保持原样:', e)
+          "
+
+      - name: Commit and push
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add pages/data.json
+          git commit -m "Auto: update dashboard data" || echo "No changes"
+          git push
