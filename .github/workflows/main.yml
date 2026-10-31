@@ -1,0 +1,88 @@
+name: Train Custom 100M GPT
+on: workflow_dispatch
+
+env:
+  HF_CKPT_REPO: ${{ vars.HF_REPO }}
+
+jobs:
+  stage-1:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps: &steps
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.10' }
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+      - run: pip install torch --index-url https://download.pytorch.org/whl/cpu && pip install -r requirements.txt
+      - run: python make_data.py
+      - env: { HF_TOKEN: "${{ secrets.HF_TOKEN }}" }
+        run: python train.py
+
+  stage-2:
+    needs: stage-1
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps: *steps
+
+  stage-3:
+    needs: stage-2
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps: *steps
+
+  stage-4:
+    needs: stage-3
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps: *steps
+
+  stage-5:
+    needs: stage-4
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps: *steps
+
+  stage-6:
+    needs: stage-5
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps: *steps
+
+  stage-7:
+    needs: stage-6
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps: *steps
+
+  stage-8:
+    needs: stage-7
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps: *steps
+
+  stage-9:
+    needs: stage-8
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps: *steps
+
+  stage-10:
+    needs: stage-9
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps: *steps
+
+  export-gguf:
+    needs: [stage-1, stage-2, stage-3, stage-4, stage-5, stage-6, stage-7, stage-8, stage-9, stage-10]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.10' }
+      - run: pip install torch --index-url https://download.pytorch.org/whl/cpu && pip install -r requirements.txt
+      - env: { HF_TOKEN: "${{ secrets.HF_TOKEN }}" }
+        run: python convert_to_gguf.py
