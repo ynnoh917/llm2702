@@ -1,4 +1,4 @@
-import os, time, json, torch, numpy as np, math
+import os, time, torch, numpy as np, math
 from transformers import GPT2LMHeadModel, GPT2Config, AutoTokenizer
 from huggingface_hub import hf_hub_download, HfApi
 
@@ -9,7 +9,9 @@ BATCH_SIZE = 8
 GRAD_ACCUM = 4
 BLOCK_SIZE = 256
 LR = 5e-4
-TOTAL_EXPECTED_STEPS = 20000
+SAVE_EVERY_STEPS = 1000  # 每 1000 步保存一次
+
+tokenizer = AutoTokenizer.from_pretrained("data/tokenizer")
 
 def get_config(vocab_size):
     return GPT2Config(
@@ -19,21 +21,25 @@ def get_config(vocab_size):
         bos_token_id=tokenizer.bos_token_id, eos_token_id=tokenizer.eos_token_id
     )
 
-def get_lr(step, max_steps):
-    if step < 100: return LR * (step / 100)
-    progress = (step - 100) / max(1, (max_steps - 100))
-    return LR * 0.1 + 0.5 * LR * (1.0 + math.cos(math.pi * progress))
-
 def get_batch(data, block_size, batch_size):
     idx = torch.randint(len(data) - block_size - 1, (batch_size,))
     x = torch.stack([torch.from_numpy(data[i:i+block_size].astype(np.int64)) for i in idx])
     y = torch.stack([torch.from_numpy(data[i+1:i+1+block_size].astype(np.int64)) for i in idx])
     return x, y
 
+def save_and_push(model, optimizer, step):
+    print(f"💾 正在保存 step {step} 的权重并推送到 Hugging Face...", flush=True)
+    os.makedirs("ckpt", exist_ok=True)
+    model.save_pretrained("ckpt")
+    torch.save(optimizer.state_dict(), "ckpt/optimizer.pt")
+    with open("ckpt/step.txt", "w") as f: f.write(str(step))
+    tokenizer.save_pretrained("ckpt")
+    HfApi().upload_folder(folder_path="ckpt", repo_id=CKPT_REPO, repo_type="model",
+                          allow_patterns=["*.safetensors", "*.pt", "*.txt", "*.json"])
+    print("✅ 推送完成！", flush=True)
+
 if __name__ == "__main__":
-    tokenizer = AutoTokenizer.from_pretrained("data/tokenizer")
     vocab_size = len(tokenizer)
-    
     model = GPT2LMHeadModel(get_config(vocab_size)).to(DEVICE)
     optimizer = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=0.01)
     
@@ -55,7 +61,8 @@ if __name__ == "__main__":
     
     while True:
         step += 1
-        lr = get_lr(step, TOTAL_EXPECTED_STEPS)
+        # 学习率衰减
+        lr = LR * (0.1 + 0.9 * (1 - min(step / 50000, 1.0))) 
         for param_group in optimizer.param_groups:
             param_group['lr'] = lr
 
@@ -73,16 +80,13 @@ if __name__ == "__main__":
         if step % 10 == 0:
             print(f"Step {step} | Loss: {loss_accum:.4f} | LR: {lr:.6f}", flush=True)
 
+        # 阶段性保存
+        if step % SAVE_EVERY_STEPS == 0:
+            save_and_push(model, optimizer, step)
+
+        # 时间截断（到时间了必须保存走人）
         if (time.time() - start_time) / 60 >= MAX_MINUTES:
             print(f"⏰ 达到 {MAX_MINUTES} 分钟，强制保存退出。", flush=True)
             break
 
-    os.makedirs("ckpt", exist_ok=True)
-    model.save_pretrained("ckpt")
-    torch.save(optimizer.state_dict(), "ckpt/optimizer.pt")
-    with open("ckpt/step.txt", "w") as f: f.write(str(step))
-    tokenizer.save_pretrained("ckpt")
-    
-    HfApi().upload_folder(folder_path="ckpt", repo_id=CKPT_REPO, repo_type="model",
-                          allow_patterns=["*.safetensors", "*.pt", "*.txt", "*.json"])
-    print("✅ 本阶段已推送到 Hugging Face")
+    save_and_push(model, optimizer, step)
