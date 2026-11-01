@@ -2,47 +2,74 @@ name: Sync Training Progress to Gmeek
 
 on:
   schedule:
-    - cron: '0 0 * * *' # 每天凌晨自动同步一次
-  workflow_dispatch: # 支持手动点击运行
+    - cron: '0 2 * * *' # 每天凌晨 2 点同步一次（避开 0 点的高峰期，防止延迟）
+  workflow_dispatch:    # 支持手动点击测试
+
+permissions:
+  issues: write         # 允许发 Issue
 
 jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - name: Fetch Progress from HF
+      - name: Fetch Progress and Create Issue
         env:
           HF_CKPT_REPO: ${{ vars.HF_CKPT_REPO }}
-        run: |
-          pip install huggingface_hub
-          # 去 HF 获取最新的 step.txt
-          python -c "
-          import os
-          from huggingface_hub import hf_hub_download
-          try:
-              path = hf_hub_download(repo_id=os.environ['HF_CKPT_REPO'], filename='step.txt')
-              with open(path, 'r') as f:
-                  step = f.read().strip()
-          except Exception:
-              step = '0'
-          print(f'STEP_COUNT={step}')
-          " >> $GITHUB_ENV
-
-      - name: Create Issue on Gmeek
-        env:
           BLOG_TOKEN: ${{ secrets.BLOG_TOKEN }}
-          BLOG_REPO: ynnoh917/ynnoh917.github.io # ⚠️ 这里换成你的 Gmeek 博客仓库名
+          BLOG_REPO: ynnoh917/ynnoh917.github.io # ⚠️ 确认这是你的博客仓库名
         run: |
-          DATE=$(date +"%Y-%m-%d %H:%M")
+          pip install huggingface_hub requests
           
-          # 构造 Issue 的标题和正文
-          TITLE="炼丹日志：100M 模型已训练至 ${STEP_COUNT} 步"
-          BODY="**哈哈哈！1号测试模型 (100M GPT-2) 仍在云端默默进化中。**\n\n- **当前步数**：\`${STEP_COUNT}\` 步\n- **更新时间**：${DATE}\n- **训练设备**：GitHub Actions (超长待机版)\n\n*只要云端不崩，我就继续学中文！*"
+          python -c "
+          import os, json, requests, time
+          from huggingface_hub import hf_hub_download
+
+          # 1. 从 HF 拉取最新进度
+          try:
+              path = hf_hub_download(repo_id=os.environ['HF_CKPT_REPO'], filename='progress.json')
+              with open(path, 'r') as f:
+                  data = json.load(f)
+              step = data.get('step', 0)
+              loss = data.get('loss', 0.0)
+              update_time = data.get('timestamp', '未知')
+          except Exception as e:
+              print('拉取进度失败，可能模型还没开始保存:', e)
+              step = 0
+              loss = 0.0
+              update_time = '等待云端炼丹炉同步'
+
+          # 如果还是 0 步，说明没数据，就不发博客了，防止刷屏
+          if step == 0:
+              print('当前步数为 0，跳过发送 Issue。')
+              exit(0)
+
+          # 2. 构造 Issue 内容
+          title = f'炼丹日志：100M 模型已训练至 {step} 步'
+          body = f'''**哈哈哈！1号测试模型 (100M GPT-2) 正在云端默默进化中。**
           
-          # 调用 GitHub API 创建 Issue
-          curl -L \
-            -X POST \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${BLOG_TOKEN}" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            https://api.github.com/repos/${BLOG_REPO}/issues \
-            -d "{\"title\":\"${TITLE}\",\"body\":\"${BODY}\",\"labels\":[\"Gmeek\"]}"
+          - **当前步数**：`{step}` 步
+          - **最新 Loss**：`{loss}`
+          - **更新时间**：{update_time}
+          - **训练设备**：GitHub Actions
+          
+          *只要云端不崩，我就继续学中文！*
+          '''
+          
+          # 3. 调用 GitHub API 发送 Issue
+          url = f'https://api.github.com/repos/{os.environ[\"BLOG_REPO\"]}/issues'
+          headers = {
+              'Authorization': f'Bearer {os.environ[\"BLOG_TOKEN\"]}',
+              'Accept': 'application/vnd.github+json'
+          }
+          payload = {
+              'title': title,
+              'body': body,
+              'labels': ['Gmeek'] # ⚠️ 确保这里是你 Gmeek 配置的标签名
+          }
+          
+          res = requests.post(url, headers=headers, json=payload)
+          if res.status_code == 201:
+              print('✅ Issue 发送成功:', res.json().get('html_url'))
+          else:
+              print('❌ Issue 发送失败:', res.status_code, res.text)
+          "
