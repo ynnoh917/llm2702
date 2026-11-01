@@ -1,37 +1,52 @@
-name: Train 100M GPT (Auto Scheduler)
+name: Update Web Dashboard
 
 on:
   schedule:
-    - cron: '0 */2 * * *'
-  workflow_dispatch:
+    - cron: '0 */4 * * *'   # 每 4 小时自动同步一次
+  workflow_dispatch:        # 支持手动触发
 
-env:
-  HF_CKPT_REPO: ${{ vars.HF_CKPT_REPO }}
+# 核心修复：赋予机器人写入仓库代码的权限
+permissions:
+  contents: write
 
 jobs:
-  auto-train:
+  update-web:
     runs-on: ubuntu-latest
-    timeout-minutes: 180 # 放宽到 3 小时
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: 
-          python-version: '3.10'
-          
-      - name: Cache dependencies
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
-          
-      - name: Install dependencies
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Fetch progress from Hugging Face
+        env:
+          HF_CKPT_REPO: ${{ vars.HF_CKPT_REPO }}
         run: |
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install -r requirements.txt
-          
-      - name: Run Training
-        env: 
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        # 即使 Python 报错，也不要立刻取消后续步骤（方便我们排查）
-        continue-on-error: true
-        run: python train.py
+          pip install huggingface_hub
+          mkdir -p docs
+          python -c "
+          import os, json
+          from huggingface_hub import hf_hub_download
+          try:
+              path = hf_hub_download(repo_id=os.environ['HF_CKPT_REPO'], filename='progress.json')
+              with open(path, 'r') as f:
+                  data = json.load(f)
+              with open('docs/data.json', 'w', encoding='utf-8') as f:
+                  json.dump(data, f, ensure_ascii=False, indent=4)
+              print('✅ 同步成功:', data)
+          except Exception as e:
+              print('⚠️ 暂无数据或拉取失败，生成默认占位数据:', e)
+              default_data = {
+                  'step': 0, 
+                  'loss': 0.0, 
+                  'timestamp': '等待云端炼丹炉同步...'
+              }
+              with open('docs/data.json', 'w', encoding='utf-8') as f:
+                  json.dump(default_data, f, ensure_ascii=False, indent=4)
+          "
+
+      - name: Commit and push
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add docs/data.json
+          git commit -m "Auto: update dashboard data" || echo "No changes to commit"
+          git push
