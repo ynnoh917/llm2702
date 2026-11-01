@@ -9,11 +9,11 @@ print("✅ 依赖库加载完毕，准备读取环境变量...", flush=True)
 
 CKPT_REPO = os.environ["HF_CKPT_REPO"]
 DEVICE = "cpu"
-BATCH_SIZE = 8
-GRAD_ACCUM = 4
+BATCH_SIZE = 4
+GRAD_ACCUM = 8
 BLOCK_SIZE = 256
 LR = 5e-4
-STEPS_PER_RUN = 1500
+STEPS_PER_RUN = 500
 
 EOS_ID = 102 
 
