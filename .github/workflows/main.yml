@@ -1,9 +1,9 @@
-name: Train 100M GPT (Auto Scheduler)
+name: Train 100M GPT (Chain Trigger)
 
 on:
-  schedule:
-    - cron: '0 */2 * * *'
-  workflow_dispatch:
+  workflow_dispatch: # 只保留手动触发
+  repository_dispatch:
+    types: [start-next-run] # 让上一个任务跑完后通过 API 触发自己
 
 env:
   HF_CKPT_REPO: ${{ vars.HF_CKPT_REPO }}
@@ -11,27 +11,28 @@ env:
 jobs:
   auto-train:
     runs-on: ubuntu-latest
-    timeout-minutes: 180 # 放宽到 3 小时
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: 
-          python-version: '3.10'
-          
-      - name: Cache dependencies
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
-          
+        with: { python-version: '3.10' }
       - name: Install dependencies
-        run: |
-          pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install -r requirements.txt
-          
+        run: pip install torch --index-url https://download.pytorch.org/whl/cpu && pip install -r requirements.txt
+      
       - name: Run Training
         env: 
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        # 即使 Python 报错，也不要立刻取消后续步骤（方便我们排查）
-        continue-on-error: true
         run: python train.py
+
+      # 🔥 核心修复：跑完后自动触发下一次训练
+      - name: Trigger Next Run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }} # 使用 GitHub 自带的 Token
+        run: |
+          echo "本次训练结束，正在唤醒下一次训练..."
+          curl -L -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/repos/${{ github.repository }}/dispatches \
+            -d '{"event_type": "start-next-run"}'
